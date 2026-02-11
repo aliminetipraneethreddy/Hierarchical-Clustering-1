@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import scipy.cluster.hierarchy as sch
+import plotly.express as px
+import plotly.figure_factory as ff
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AgglomerativeClustering
@@ -38,7 +38,7 @@ if uploaded_file is not None:
     st.dataframe(df.head())
 
     # --------------------------------------------------
-    # Select Text Column (only object columns)
+    # Select Text Column
     # --------------------------------------------------
     text_columns = df.select_dtypes(include=["object"]).columns
 
@@ -56,12 +56,11 @@ if uploaded_file is not None:
         st.stop()
 
     # --------------------------------------------------
-    # Text Vectorization Controls
+    # TF-IDF Controls
     # --------------------------------------------------
     st.sidebar.header("📝 Text Vectorization Controls")
 
     max_features = st.sidebar.slider("Maximum TF-IDF Features", 100, 2000, 1000)
-
     use_stopwords = st.sidebar.checkbox("Use English Stopwords", value=True)
 
     ngram_option = st.sidebar.selectbox(
@@ -78,28 +77,16 @@ if uploaded_file is not None:
 
     stop_words = "english" if use_stopwords else None
 
-    # --------------------------------------------------
-    # TF-IDF Vectorization (Safe)
-    # --------------------------------------------------
-    try:
-        vectorizer = TfidfVectorizer(
-            max_features=max_features,
-            stop_words=stop_words,
-            ngram_range=ngram_range
-        )
+    vectorizer = TfidfVectorizer(
+        max_features=max_features,
+        stop_words=stop_words,
+        ngram_range=ngram_range
+    )
 
-        X_tfidf = vectorizer.fit_transform(corpus)
-
-        if len(vectorizer.get_feature_names_out()) == 0:
-            st.error("No valid words found after preprocessing.")
-            st.stop()
-
-    except Exception:
-        st.error("TF-IDF failed. Try disabling stopwords or selecting another column.")
-        st.stop()
+    X_tfidf = vectorizer.fit_transform(corpus)
 
     # --------------------------------------------------
-    # Hierarchical Clustering Controls
+    # Clustering Controls
     # --------------------------------------------------
     st.sidebar.header("🌳 Hierarchical Clustering Controls")
 
@@ -108,77 +95,47 @@ if uploaded_file is not None:
         ["ward", "complete", "average", "single"]
     )
 
-    metric = "euclidean"
-
-    dendro_sample_size = st.sidebar.slider(
-        "Number of Articles for Dendrogram",
-        20,
-        min(200, len(corpus)),
-        min(50, len(corpus))
-    )
-
-    # --------------------------------------------------
-    # Generate Dendrogram
-    # --------------------------------------------------
-    if st.button("🟦 Generate Dendrogram"):
-
-        st.subheader("🌳 Dendrogram (Subset of Articles)")
-
-        subset = X_tfidf[:dendro_sample_size].toarray()
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sch.dendrogram(
-            sch.linkage(subset, method=linkage_method),
-            ax=ax
-        )
-
-        ax.set_title("Dendrogram")
-        ax.set_xlabel("Article Index")
-        ax.set_ylabel("Distance")
-
-        st.pyplot(fig)
-
-        st.info("Inspect large vertical gaps to decide natural cluster separation.")
+    n_clusters = st.sidebar.slider("Number of Clusters", 2, 10, 5)
 
     # --------------------------------------------------
     # Apply Clustering
     # --------------------------------------------------
-    st.sidebar.header("🟩 Apply Clustering")
-
-    n_clusters = st.sidebar.slider("Number of Clusters", 2, 10, 5)
-
     if st.button("🟩 Apply Clustering"):
 
         model = AgglomerativeClustering(
             n_clusters=n_clusters,
-            metric=metric,
             linkage=linkage_method
         )
 
         labels = model.fit_predict(X_tfidf.toarray())
+
         df = df.loc[corpus.index].copy()
         df["Cluster"] = labels
 
         # --------------------------------------------------
-        # PCA Visualization
+        # PCA Visualization (Plotly)
         # --------------------------------------------------
         st.subheader("📊 Cluster Visualization (2D Projection)")
 
         pca = PCA(n_components=2)
         reduced = pca.fit_transform(X_tfidf.toarray())
 
-        fig2, ax2 = plt.subplots(figsize=(10, 6))
-        scatter = ax2.scatter(
-            reduced[:, 0],
-            reduced[:, 1],
-            c=labels
+        viz_df = pd.DataFrame({
+            "PCA1": reduced[:, 0],
+            "PCA2": reduced[:, 1],
+            "Cluster": labels,
+            "Snippet": corpus.values
+        })
+
+        fig = px.scatter(
+            viz_df,
+            x="PCA1",
+            y="PCA2",
+            color="Cluster",
+            hover_data=["Snippet"]
         )
 
-        ax2.set_xlabel("PCA Component 1")
-        ax2.set_ylabel("PCA Component 2")
-        ax2.set_title("Clusters in 2D Space")
-
-        st.pyplot(fig2)
+        st.plotly_chart(fig, use_container_width=True)
 
         # --------------------------------------------------
         # Silhouette Score
@@ -201,7 +158,7 @@ if uploaded_file is not None:
         # --------------------------------------------------
         # Cluster Summary
         # --------------------------------------------------
-        st.subheader("📋 Cluster Summary (Business View)")
+        st.subheader("📋 Cluster Summary")
 
         feature_names = vectorizer.get_feature_names_out()
         summary_data = []
@@ -209,42 +166,24 @@ if uploaded_file is not None:
         for cluster_id in range(n_clusters):
 
             cluster_indices = np.where(labels == cluster_id)[0]
-
             cluster_matrix = X_tfidf[cluster_indices]
-            mean_tfidf = np.asarray(cluster_matrix.mean(axis=0)).flatten()
 
+            mean_tfidf = np.asarray(cluster_matrix.mean(axis=0)).flatten()
             top_indices = mean_tfidf.argsort()[-10:][::-1]
             top_keywords = [feature_names[i] for i in top_indices]
 
-            representative_article = corpus.iloc[cluster_indices[0]][:200]
+            snippet = corpus.iloc[cluster_indices[0]][:200]
 
             summary_data.append({
                 "Cluster ID": cluster_id,
                 "Number of Articles": len(cluster_indices),
                 "Top Keywords": ", ".join(top_keywords),
-                "Sample Article Snippet": representative_article + "..."
+                "Sample Snippet": snippet + "..."
             })
 
         summary_df = pd.DataFrame(summary_data)
         st.dataframe(summary_df)
 
-        # --------------------------------------------------
-        # Business Interpretation
-        # --------------------------------------------------
-        st.subheader("📰 Business Interpretation")
-
-        for row in summary_data:
-            st.markdown(f"""
-🟣 **Cluster {row['Cluster ID']}**  
-These articles focus on themes such as:  
-{row['Top Keywords']}
-
-This group likely represents a specific news topic based on shared vocabulary.
-""")
-
-        # --------------------------------------------------
-        # Insight Box
-        # --------------------------------------------------
         st.info("""
 Articles grouped in the same cluster share similar vocabulary and themes. 
 These clusters can be used for automatic tagging, recommendations, and content organization.
